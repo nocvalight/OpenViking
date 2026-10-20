@@ -1483,14 +1483,12 @@ class FileStore(AccountStore):
         The hot-path ``get_user`` reads in-memory state directly; this admin
         probe first honors the persisted registry when the watcher is off, so a
         user created or re-roled by a peer process is visible cross-instance
-        instead of returning a stale 404 or role. A per-account refresh raises
-        ``NotFoundError`` when the account has no persisted state at all; that is
-        normalized to ``None`` so the contract stays "absent -> None".
+        instead of returning a stale 404 or role. Mirrors
+        ``list_users_page(fresh=False)``: the refresh raises
+        ``NotFoundError(account)`` for an unknown account and that bubbles up as
+        a 404, matching the list endpoint.
         """
-        try:
-            await self._refresh_users_for_management_read(account_id)
-        except NotFoundError:
-            return None
+        await self._refresh_users_for_management_read(account_id)
         return await self.get_user(account_id, user_id)
 
     @deprecated(

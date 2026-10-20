@@ -3799,12 +3799,20 @@ async def test_user_point_read_returns_role_without_credentials(
         headers=root_headers(),
     )
     assert unknown_user.status_code == 404
+    assert unknown_user.json()["error"]["message"] == "User not found: ghost"
 
+    # An unknown account bubbles up the account-level 404 from the refresh,
+    # matching list_users rather than masquerading as a missing user.
+    unknown_account_id = _uid()
     unknown_account = await lightweight_admin_client.get(
-        f"/api/v1/admin/accounts/{_uid()}/users/alice",
+        f"/api/v1/admin/accounts/{unknown_account_id}/users/alice",
         headers=root_headers(),
     )
     assert unknown_account.status_code == 404
+    assert (
+        unknown_account.json()["error"]["message"]
+        == f"Account not found: {unknown_account_id}"
+    )
 
 
 async def test_user_point_read_admin_scoped_to_own_account(lightweight_admin_client):
