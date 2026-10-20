@@ -59,6 +59,15 @@ class AccountStore(ABC):
     @abstractmethod
     async def get_user(self, account_id: str, user_id: str) -> UserSummary | None: ...
 
+    @abstractmethod
+    async def user_exists(self, account_id: str, user_id: str) -> bool:
+        """Return whether ``user_id`` is an active member of ``account_id``.
+
+        Existence is O(1) and accounts or users in the middle of deletion
+        (``status == "deleting"``) are not counted as members.
+        """
+        ...
+
     @deprecated(
         "get_user_for_management is a FileStore compatibility path and will be removed.",
         category=None,

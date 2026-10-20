@@ -3717,3 +3717,160 @@ async def test_private_model_probe_passes_draft_without_saving(
     assert response.json()["result"] == {"ok": True, "ms": 12}
     assert "draft-secret" not in response.text
     probe.assert_awaited_once_with("vlm", body["config"], body["fallback"], True, "dense")
+
+
+# ---- Exact account/user existence probes ----
+
+
+async def test_get_account_returns_credential_free_metadata_or_404(
+    lightweight_admin_client,
+):
+    account_id = _uid()
+    missing = await lightweight_admin_client.get(
+        f"/api/v1/admin/accounts/{account_id}", headers=root_headers()
+    )
+    assert missing.status_code == 404
+
+    created = await lightweight_admin_client.post(
+        "/api/v1/admin/accounts",
+        json={"account_id": account_id, "admin_user_id": "alice"},
+        headers=root_headers(),
+    )
+    assert created.status_code == 200
+
+    response = await lightweight_admin_client.get(
+        f"/api/v1/admin/accounts/{account_id}", headers=root_headers()
+    )
+    assert response.status_code == 200, response.text
+    result = response.json()["result"]
+    assert result == {
+        "account_id": account_id,
+        "created_at": result["created_at"],
+        "user_count": 1,
+        "status": "active",
+    }
+    # Existence metadata must never carry credentials.
+    body = response.text
+    for secret_field in ("api_key", "user_key", "key_prefix", "seed"):
+        assert secret_field not in body
+
+
+async def test_get_account_is_root_only(template_account, lightweight_admin_client):
+    account_id, admin_headers = template_account
+    response = await lightweight_admin_client.get(
+        f"/api/v1/admin/accounts/{account_id}", headers=admin_headers
+    )
+    assert response.status_code == 403
+
+
+async def test_user_exist_reports_active_membership_without_credentials(
+    lightweight_admin_client,
+):
+    account_id = _uid()
+    created = await lightweight_admin_client.post(
+        "/api/v1/admin/accounts",
+        json={"account_id": account_id, "admin_user_id": "alice"},
+        headers=root_headers(),
+    )
+    assert created.status_code == 200
+    admin_headers = {"X-API-Key": created.json()["result"]["user_key"]}
+
+    registered = await lightweight_admin_client.post(
+        f"/api/v1/admin/accounts/{account_id}/users",
+        json={"user_id": "bob"},
+        headers=admin_headers,
+    )
+    assert registered.status_code == 200
+
+    for user_id in ("alice", "bob"):
+        response = await lightweight_admin_client.get(
+            f"/api/v1/admin/accounts/{account_id}/users/{user_id}/exist",
+            headers=root_headers(),
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["result"] == {"exist": True}
+
+    unknown_user = await lightweight_admin_client.get(
+        f"/api/v1/admin/accounts/{account_id}/users/ghost/exist",
+        headers=root_headers(),
+    )
+    assert unknown_user.json()["result"] == {"exist": False}
+
+    unknown_account = await lightweight_admin_client.get(
+        f"/api/v1/admin/accounts/{_uid()}/users/alice/exist",
+        headers=root_headers(),
+    )
+    assert unknown_account.json()["result"] == {"exist": False}
+    for secret_field in ("api_key", "user_key", "key_prefix", "seed"):
+        assert secret_field not in unknown_user.text
+
+
+async def test_user_exist_admin_scoped_to_own_account(lightweight_admin_client):
+    account_id = _uid()
+    other = _uid()
+    created = await lightweight_admin_client.post(
+        "/api/v1/admin/accounts",
+        json={"account_id": account_id, "admin_user_id": "alice"},
+        headers=root_headers(),
+    )
+    admin_headers = {"X-API-Key": created.json()["result"]["user_key"]}
+    await lightweight_admin_client.post(
+        "/api/v1/admin/accounts",
+        json={"account_id": other, "admin_user_id": "alice"},
+        headers=root_headers(),
+    )
+
+    own = await lightweight_admin_client.get(
+        f"/api/v1/admin/accounts/{account_id}/users/alice/exist",
+        headers=admin_headers,
+    )
+    assert own.status_code == 200 and own.json()["result"] == {"exist": True}
+
+    denied = await lightweight_admin_client.get(
+        f"/api/v1/admin/accounts/{other}/users/alice/exist",
+        headers=admin_headers,
+    )
+    assert denied.status_code == 403
+
+
+async def test_user_exist_false_while_account_or_user_deleting(
+    lightweight_admin_client,
+    lightweight_admin_app,
+):
+    manager = lightweight_admin_app.state.api_key_manager
+    account_id = _uid()
+    created = await lightweight_admin_client.post(
+        "/api/v1/admin/accounts",
+        json={"account_id": account_id, "admin_user_id": "alice"},
+        headers=root_headers(),
+    )
+    assert created.status_code == 200
+    admin_headers = {"X-API-Key": created.json()["result"]["user_key"]}
+    registered = await lightweight_admin_client.post(
+        f"/api/v1/admin/accounts/{account_id}/users",
+        json={"user_id": "bob"},
+        headers=admin_headers,
+    )
+    assert registered.status_code == 200
+    assert await manager.user_exists(account_id, "bob") is True
+
+    # A user mid-deletion is no longer an active member.
+    await manager.begin_deletion(
+        account_id,
+        "bob",
+        task_id="task-user",
+        owner_account_id=account_id,
+        owner_user_id="root",
+    )
+    assert await manager.user_exists(account_id, "bob") is False
+
+    # An account mid-deletion reports no active members either.
+    await manager.finish_deletion(account_id, "bob", "task-user")
+    await manager.begin_deletion(
+        account_id,
+        None,
+        task_id="task-account",
+        owner_account_id=account_id,
+        owner_user_id="root",
+    )
+    assert await manager.user_exists(account_id, "alice") is False

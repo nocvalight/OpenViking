@@ -85,6 +85,56 @@ Python SDK 提供对应的 `admin_create_group`、`admin_list_groups`、`admin_l
 
 ## API 参考
 
+### account / user 存在性查询
+
+创建 Account/User 前可用两个精确判存接口替代“列出后本地比对”。二者都命中内存注册表，时间复杂度 O(1)，且只返回无凭据信息；开启 `server.api_key_watch_enabled` 时直接读内存，关闭时会回退读取持久化的注册表。
+
+**查询单个 Account（仅 ROOT）**
+
+```
+GET /api/v1/admin/accounts/{account_id}
+```
+
+命中返回该 Account 的无凭据元数据；不存在返回 404。
+
+```bash
+curl "http://localhost:1933/api/v1/admin/accounts/team-a" \
+  -H "X-API-Key: <root-key>"
+```
+
+```json
+{
+  "status": "ok",
+  "result": {
+    "account_id": "team-a",
+    "created_at": "2026-10-20T03:00:00Z",
+    "user_count": 2,
+    "status": "active"
+  }
+}
+```
+
+`status` 为 `deleting` 时附带 `task_id`。响应不包含 `api_key`、`user_key`、`key_prefix` 或 `seed`。
+
+**查询 User 是否为有效成员（ROOT 或本 Account 的 ADMIN）**
+
+```
+GET /api/v1/admin/accounts/{account_id}/users/{user_id}/exist
+```
+
+只返回布尔结果，刻意不复用任何会返回凭据的 user 读取形态：
+
+```bash
+curl "http://localhost:1933/api/v1/admin/accounts/team-a/users/alice/exist" \
+  -H "X-API-Key: <root-key>"
+```
+
+```json
+{ "status": "ok", "result": { "exist": true } }
+```
+
+`exist` 表示该 user 当前是否为**有效成员**：Account 或 User 处于删除中（`status == "deleting"`）时返回 `false`，不计为成员。ADMIN 只能查询自己所属的 Account，跨 Account 返回 403。精确判存只是创建前的快速校验，并发唯一性仍由创建时的写入冲突（`ALREADY_EXISTS`）兜底。
+
 ### get_agent_evolution_status
 
 返回调用方所属 account 的 Agent 进化实时状态。ROOT 操作已配置的默认

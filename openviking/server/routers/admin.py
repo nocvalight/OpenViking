@@ -521,6 +521,20 @@ async def list_accounts(
     return Response(status="ok", result=accounts)
 
 
+@router.get("/accounts/{account_id}")
+@require_auth_root
+async def get_account(
+    request: Request,
+    account_id: str,
+    ctx: RequestContext = Depends(get_request_context),
+):
+    """Return credential-free metadata for one account, or 404 if absent."""
+    account = await _get_api_key_manager(request).get_account(account_id)
+    if account is None:
+        raise NotFoundError(account_id, "account")
+    return Response(status="ok", result=account)
+
+
 @router.post("/migrate")
 @require_auth_root
 async def migrate_legacy_data(
@@ -1034,6 +1048,20 @@ async def list_users(
             for user in users["users"]
         ]
     return Response(status="ok", result=users if include_summary else users["users"])
+
+
+@router.get("/accounts/{account_id}/users/{user_id}/exist")
+@require_auth_root_or_admin
+async def user_exists(
+    request: Request,
+    account_id: str = Path(..., description="Account ID"),
+    user_id: str = Path(..., description="User ID"),
+    ctx: RequestContext = Depends(get_request_context),
+):
+    """Return whether the user is an active member; never returns credentials."""
+    _check_account_access(ctx, account_id)
+    exist = await _get_api_key_manager(request).user_exists(account_id, user_id)
+    return Response(status="ok", result={"exist": bool(exist)})
 
 
 @router.get("/accounts/{account_id}/users/{user_id}/settings")

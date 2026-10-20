@@ -85,6 +85,66 @@ The Python SDK exposes `admin_create_group`, `admin_list_groups`, `admin_list_gr
 
 ## API Reference
 
+### account / user existence queries
+
+Before creating an Account/User, use these exact existence probes instead of
+"list then compare locally". Both hit the in-memory registry in O(1) and return
+only credential-free information. With `server.api_key_watch_enabled` enabled
+they read memory directly; otherwise they fall back to reading the persisted
+registry.
+
+**Fetch one Account (ROOT only)**
+
+```
+GET /api/v1/admin/accounts/{account_id}
+```
+
+Returns the account's credential-free metadata on hit, or 404 if absent.
+
+```bash
+curl "http://localhost:1933/api/v1/admin/accounts/team-a" \
+  -H "X-API-Key: <root-key>"
+```
+
+```json
+{
+  "status": "ok",
+  "result": {
+    "account_id": "team-a",
+    "created_at": "2026-10-20T03:00:00Z",
+    "user_count": 2,
+    "status": "active"
+  }
+}
+```
+
+When `status` is `deleting`, a `task_id` is included. The response never
+contains `api_key`, `user_key`, `key_prefix`, or `seed`.
+
+**Check whether a user is an active member (ROOT or the account's ADMIN)**
+
+```
+GET /api/v1/admin/accounts/{account_id}/users/{user_id}/exist
+```
+
+Returns only a boolean and deliberately does not reuse any user-read shape that
+could return credentials:
+
+```bash
+curl "http://localhost:1933/api/v1/admin/accounts/team-a/users/alice/exist" \
+  -H "X-API-Key: <root-key>"
+```
+
+```json
+{ "status": "ok", "result": { "exist": true } }
+```
+
+`exist` reports whether the user is currently an **active member**: it is
+`false` while the account or user is mid-deletion (`status == "deleting"`).
+An ADMIN may only query its own account; cross-account access returns 403.
+This probe is a fast pre-create check only; concurrent uniqueness is still
+guaranteed by the create-time write conflict (`ALREADY_EXISTS`).
+
 ### get_agent_evolution_status
 
 Return the effective Agent Evolution switch for the caller's account. ROOT
