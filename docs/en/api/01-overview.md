@@ -510,7 +510,7 @@ This catalog follows the routes actually mounted by the server. Each group headi
 | DELETE | `/api/v1/admin/accounts/{account_id}` | Delete an account |
 | POST | `/api/v1/admin/accounts/{account_id}/users` | Register a user |
 | GET | `/api/v1/admin/accounts/{account_id}/users` | List users |
-| GET | `/api/v1/admin/accounts/{account_id}/users/{user_id}/exist` | Check whether a user is an active member (boolean only) |
+| GET | `/api/v1/admin/accounts/{account_id}/users/{user_id}` | Get one user's credential-free membership info (user_id, role) |
 | GET | `/api/v1/admin/accounts/{account_id}/users/{user_id}/settings` | Get a user's memory policy |
 | PATCH | `/api/v1/admin/accounts/{account_id}/users/{user_id}/settings` | Update a user's memory policy |
 | DELETE | `/api/v1/admin/accounts/{account_id}/users/{user_id}` | Remove a user |

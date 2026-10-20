@@ -71,18 +71,15 @@ func (c *Client) AdminGetAccount(ctx context.Context, accountID string) (map[str
 	return result, err
 }
 
-// AdminUserExists reports whether a user is an active member of an account.
-// Accounts or users mid-deletion are not counted as active members.
-func (c *Client) AdminUserExists(ctx context.Context, accountID, userID string) (bool, error) {
-	var result struct {
-		Exist bool `json:"exist"`
-	}
+// AdminGetUser returns one user's credential-free membership info (user_id, role).
+// It returns an *Error with code NOT_FOUND when the user does not exist and never
+// exposes api_key or key_prefix.
+func (c *Client) AdminGetUser(ctx context.Context, accountID, userID string) (map[string]any, error) {
+	var result map[string]any
 	path := "/api/v1/admin/accounts/" + url.PathEscape(accountID) +
-		"/users/" + url.PathEscape(userID) + "/exist"
-	if err := c.doJSON(ctx, http.MethodGet, path, nil, nil, &result); err != nil {
-		return false, err
-	}
-	return result.Exist, nil
+		"/users/" + url.PathEscape(userID)
+	err := c.doJSON(ctx, http.MethodGet, path, nil, nil, &result)
+	return result, err
 }
 
 // AdminRegisterUser registers a user in an account.

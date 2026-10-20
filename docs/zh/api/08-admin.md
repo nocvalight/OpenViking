@@ -116,24 +116,24 @@ curl "http://localhost:1933/api/v1/admin/accounts/team-a" \
 
 `status` 为 `deleting` 时附带 `task_id`。响应不包含 `api_key`、`user_key`、`key_prefix` 或 `seed`。
 
-**查询 User 是否为有效成员（ROOT 或本 Account 的 ADMIN）**
+**查询单个 User 的成员信息（ROOT 或本 Account 的 ADMIN）**
 
 ```
-GET /api/v1/admin/accounts/{account_id}/users/{user_id}/exist
+GET /api/v1/admin/accounts/{account_id}/users/{user_id}
 ```
 
-只返回布尔结果，刻意不复用任何会返回凭据的 user 读取形态：
+点读单个用户，仅返回无凭据的成员信息，刻意不复用任何会返回凭据的 user 读取形态：
 
 ```bash
-curl "http://localhost:1933/api/v1/admin/accounts/team-a/users/alice/exist" \
+curl "http://localhost:1933/api/v1/admin/accounts/team-a/users/alice" \
   -H "X-API-Key: <root-key>"
 ```
 
 ```json
-{ "status": "ok", "result": { "exist": true } }
+{ "status": "ok", "result": { "user_id": "alice", "role": "admin" } }
 ```
 
-`exist` 表示该 user 当前是否为**有效成员**：Account 或 User 处于删除中（`status == "deleting"`）时返回 `false`，不计为成员。ADMIN 只能查询自己所属的 Account，跨 Account 返回 403。精确判存只是创建前的快速校验，并发唯一性仍由创建时的写入冲突（`ALREADY_EXISTS`）兜底。
+返回仅含 `user_id` 与 `role`，**不包含** `api_key` 或 `key_prefix`。用户不存在返回 404。ADMIN 只能查询自己所属的 Account，跨 Account 返回 403。创建前的判重可据此进行；并发唯一性仍由创建时的写入冲突（`ALREADY_EXISTS`）兜底。
 
 ### get_agent_evolution_status
 

@@ -3763,7 +3763,7 @@ async def test_get_account_is_root_only(template_account, lightweight_admin_clie
     assert response.status_code == 403
 
 
-async def test_user_exist_reports_active_membership_without_credentials(
+async def test_user_point_read_returns_role_without_credentials(
     lightweight_admin_client,
 ):
     account_id = _uid()
@@ -3782,30 +3782,32 @@ async def test_user_exist_reports_active_membership_without_credentials(
     )
     assert registered.status_code == 200
 
-    for user_id in ("alice", "bob"):
+    for user_id, role in (("alice", "admin"), ("bob", "user")):
         response = await lightweight_admin_client.get(
-            f"/api/v1/admin/accounts/{account_id}/users/{user_id}/exist",
+            f"/api/v1/admin/accounts/{account_id}/users/{user_id}",
             headers=root_headers(),
         )
         assert response.status_code == 200, response.text
-        assert response.json()["result"] == {"exist": True}
+        assert response.json()["result"] == {"user_id": user_id, "role": role}
+        # The point read is defined as a credential-free membership probe; weld
+        # that contract shut so no credential field can ever leak through it.
+        for secret_field in ("api_key", "user_key", "key_prefix", "seed"):
+            assert secret_field not in response.text
 
     unknown_user = await lightweight_admin_client.get(
-        f"/api/v1/admin/accounts/{account_id}/users/ghost/exist",
+        f"/api/v1/admin/accounts/{account_id}/users/ghost",
         headers=root_headers(),
     )
-    assert unknown_user.json()["result"] == {"exist": False}
+    assert unknown_user.status_code == 404
 
     unknown_account = await lightweight_admin_client.get(
-        f"/api/v1/admin/accounts/{_uid()}/users/alice/exist",
+        f"/api/v1/admin/accounts/{_uid()}/users/alice",
         headers=root_headers(),
     )
-    assert unknown_account.json()["result"] == {"exist": False}
-    for secret_field in ("api_key", "user_key", "key_prefix", "seed"):
-        assert secret_field not in unknown_user.text
+    assert unknown_account.status_code == 404
 
 
-async def test_user_exist_admin_scoped_to_own_account(lightweight_admin_client):
+async def test_user_point_read_admin_scoped_to_own_account(lightweight_admin_client):
     account_id = _uid()
     other = _uid()
     created = await lightweight_admin_client.post(
@@ -3821,56 +3823,14 @@ async def test_user_exist_admin_scoped_to_own_account(lightweight_admin_client):
     )
 
     own = await lightweight_admin_client.get(
-        f"/api/v1/admin/accounts/{account_id}/users/alice/exist",
+        f"/api/v1/admin/accounts/{account_id}/users/alice",
         headers=admin_headers,
     )
-    assert own.status_code == 200 and own.json()["result"] == {"exist": True}
+    assert own.status_code == 200
+    assert own.json()["result"] == {"user_id": "alice", "role": "admin"}
 
     denied = await lightweight_admin_client.get(
-        f"/api/v1/admin/accounts/{other}/users/alice/exist",
+        f"/api/v1/admin/accounts/{other}/users/alice",
         headers=admin_headers,
     )
     assert denied.status_code == 403
-
-
-async def test_user_exist_false_while_account_or_user_deleting(
-    lightweight_admin_client,
-    lightweight_admin_app,
-):
-    manager = lightweight_admin_app.state.api_key_manager
-    account_id = _uid()
-    created = await lightweight_admin_client.post(
-        "/api/v1/admin/accounts",
-        json={"account_id": account_id, "admin_user_id": "alice"},
-        headers=root_headers(),
-    )
-    assert created.status_code == 200
-    admin_headers = {"X-API-Key": created.json()["result"]["user_key"]}
-    registered = await lightweight_admin_client.post(
-        f"/api/v1/admin/accounts/{account_id}/users",
-        json={"user_id": "bob"},
-        headers=admin_headers,
-    )
-    assert registered.status_code == 200
-    assert await manager.user_exists(account_id, "bob") is True
-
-    # A user mid-deletion is no longer an active member.
-    await manager.begin_deletion(
-        account_id,
-        "bob",
-        task_id="task-user",
-        owner_account_id=account_id,
-        owner_user_id="root",
-    )
-    assert await manager.user_exists(account_id, "bob") is False
-
-    # An account mid-deletion reports no active members either.
-    await manager.finish_deletion(account_id, "bob", "task-user")
-    await manager.begin_deletion(
-        account_id,
-        None,
-        task_id="task-account",
-        owner_account_id=account_id,
-        owner_user_id="root",
-    )
-    assert await manager.user_exists(account_id, "alice") is False

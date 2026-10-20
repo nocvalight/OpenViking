@@ -724,11 +724,6 @@ class RedisMySQLAccountStore(AccountStore):
         )
         return value if value is None else UserSummary(value)
 
-    async def user_exists(self, account_id: str, user_id: str) -> bool:
-        # Bypass the read-through cache: active membership must reflect the
-        # latest account/user deletion state, which MySQL indexes directly.
-        return await self._mysql.user_exists(account_id, user_id)
-
     async def get_user_group_ids(self, account_id: str, user_id: str) -> tuple[str, ...]:
         value = await self._read_through(
             account_id,

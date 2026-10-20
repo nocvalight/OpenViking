@@ -473,29 +473,6 @@ class MySQLAccountStore(AccountStore):
             )
         return UserSummary(user_id=user.user_id, role=user.role) if user else None
 
-    async def user_exists(self, account_id: str, user_id: str) -> bool:
-        """Active membership probe; accounts/users mid-deletion are excluded."""
-        async with self._session_factory() as session:
-            count = await session.scalar(
-                select(func.count())
-                .select_from(User)
-                .join(
-                    Account,
-                    and_(
-                        Account.service_name == User.service_name,
-                        Account.account_pk == User.account_pk,
-                    ),
-                )
-                .where(
-                    User.service_name == self._service_name,
-                    Account.account_id == account_id,
-                    User.user_id == user_id,
-                    Account.deletion_task_id.is_(None),
-                    User.deletion_task_id.is_(None),
-                )
-            )
-        return count > 0
-
     async def create_account(
         self,
         account_id: str,

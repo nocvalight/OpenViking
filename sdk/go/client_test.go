@@ -687,35 +687,43 @@ func TestAdminGetAccountNotFound(t *testing.T) {
 	}
 }
 
-func TestAdminUserExists(t *testing.T) {
+func TestAdminGetUser(t *testing.T) {
 	var requestedPath string
 	client, closeServer := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			t.Fatalf("method = %s", r.Method)
 		}
 		requestedPath = r.URL.Path
-		exist := strings.HasSuffix(r.URL.Path, "/alice/exist")
-		writeOK(t, w, map[string]any{"exist": exist})
+		writeOK(t, w, map[string]any{"user_id": "alice", "role": "admin"})
 	}))
 	defer closeServer()
 
-	got, err := client.AdminUserExists(context.Background(), "acct", "alice")
+	user, err := client.AdminGetUser(context.Background(), "acct", "alice")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !got {
-		t.Fatal("expected alice to exist")
+	if user["user_id"] != "alice" || user["role"] != "admin" {
+		t.Fatalf("user = %#v", user)
 	}
-	if requestedPath != "/api/v1/admin/accounts/acct/users/alice/exist" {
+	if _, ok := user["api_key"]; ok {
+		t.Fatal("user membership must not include credentials")
+	}
+	if _, ok := user["key_prefix"]; ok {
+		t.Fatal("user membership must not include credentials")
+	}
+	if requestedPath != "/api/v1/admin/accounts/acct/users/alice" {
 		t.Fatalf("path = %s", requestedPath)
 	}
+}
 
-	missing, err := client.AdminUserExists(context.Background(), "acct", "ghost")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if missing {
-		t.Fatal("expected ghost not to exist")
+func TestAdminGetUserNotFound(t *testing.T) {
+	client, closeServer := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeAPIError(t, w, http.StatusNotFound, "NOT_FOUND", nil)
+	}))
+	defer closeServer()
+
+	if _, err := client.AdminGetUser(context.Background(), "acct", "ghost"); !IsCode(err, "NOT_FOUND") {
+		t.Fatalf("err = %v, want NOT_FOUND", err)
 	}
 }
 

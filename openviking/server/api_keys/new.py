@@ -255,10 +255,6 @@ class APIKeyManager:
     async def has_user(self, account_id, user_id):
         return await self.get_user(account_id, user_id) is not None
 
-    async def user_exists(self, account_id, user_id):
-        """Active membership probe (excludes deleting accounts/users)."""
-        return await self._store.user_exists(account_id, user_id)
-
     async def get_user_group_ids(self, account_id, user_id):
         return await self._store.get_user_group_ids(account_id, user_id)
 

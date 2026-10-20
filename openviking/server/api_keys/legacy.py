@@ -1470,17 +1470,6 @@ class FileStore(AccountStore):
             summary["task_id"] = info.deletion["task_id"]
         return summary
 
-    async def user_exists(self, account_id: str, user_id: str) -> bool:
-        """O(1) active-membership probe; deleting accounts/users are excluded."""
-        await self._refresh_accounts_for_management_read()
-        info = self._accounts.get(account_id)
-        if info is None or info.deletion:
-            return False
-        # Users are persisted per account; no-op while the registry watcher runs.
-        await self._refresh_users_for_management_read(account_id)
-        user = info.users.get(user_id)
-        return user is not None and not user.get("deletion")
-
     async def get_user(self, account_id: str, user_id: str) -> UserSummary | None:
         account = self._accounts.get(account_id)
         if account is None:

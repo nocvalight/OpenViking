@@ -655,7 +655,7 @@ def test_sync_http_client_declares_common_sync_methods_explicitly():
         "list_tasks",
         "admin_list_accounts",
         "admin_get_account",
-        "admin_user_exists",
+        "admin_get_user",
     ]:
         assert method_name in explicit_methods, method_name
 
@@ -1210,19 +1210,17 @@ async def test_admin_get_account_uses_exact_path_and_returns_metadata():
 
 
 @pytest.mark.asyncio
-async def test_admin_user_exists_reads_boolean_from_exist_path():
+async def test_admin_get_user_reads_membership_from_point_read_path():
     client = AsyncHTTPClient(url="http://localhost:1933")
     client._request = AsyncMock(return_value=object())
-    client._handle_response = lambda _response: {"exist": True}
+    client._handle_response = lambda _response: {"user_id": "alice", "role": "admin"}
 
-    assert await client.admin_user_exists("acct", "alice") is True
+    result = await client.admin_get_user("acct", "alice")
     client._request.assert_awaited_once_with(
-        "GET", "/api/v1/admin/accounts/acct/users/alice/exist"
+        "GET", "/api/v1/admin/accounts/acct/users/alice"
     )
-
-    client._request = AsyncMock(return_value=object())
-    client._handle_response = lambda _response: {"exist": False}
-    assert await client.admin_user_exists("acct", "ghost") is False
+    assert result == {"user_id": "alice", "role": "admin"}
+    assert "api_key" not in result and "key_prefix" not in result
 
 
 @pytest.mark.asyncio

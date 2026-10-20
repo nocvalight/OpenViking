@@ -121,29 +121,29 @@ curl "http://localhost:1933/api/v1/admin/accounts/team-a" \
 When `status` is `deleting`, a `task_id` is included. The response never
 contains `api_key`, `user_key`, `key_prefix`, or `seed`.
 
-**Check whether a user is an active member (ROOT or the account's ADMIN)**
+**Get one user's membership info (ROOT or the account's ADMIN)**
 
 ```
-GET /api/v1/admin/accounts/{account_id}/users/{user_id}/exist
+GET /api/v1/admin/accounts/{account_id}/users/{user_id}
 ```
 
-Returns only a boolean and deliberately does not reuse any user-read shape that
-could return credentials:
+Point-reads a single user and returns only credential-free membership info,
+deliberately not reusing any user-read shape that could return credentials:
 
 ```bash
-curl "http://localhost:1933/api/v1/admin/accounts/team-a/users/alice/exist" \
+curl "http://localhost:1933/api/v1/admin/accounts/team-a/users/alice" \
   -H "X-API-Key: <root-key>"
 ```
 
 ```json
-{ "status": "ok", "result": { "exist": true } }
+{ "status": "ok", "result": { "user_id": "alice", "role": "admin" } }
 ```
 
-`exist` reports whether the user is currently an **active member**: it is
-`false` while the account or user is mid-deletion (`status == "deleting"`).
-An ADMIN may only query its own account; cross-account access returns 403.
-This probe is a fast pre-create check only; concurrent uniqueness is still
-guaranteed by the create-time write conflict (`ALREADY_EXISTS`).
+The response contains only `user_id` and `role`; it never includes `api_key`
+or `key_prefix`. A missing user returns 404. An ADMIN may only query its own
+account; cross-account access returns 403. This can back a pre-create check;
+concurrent uniqueness is still guaranteed by the create-time write conflict
+(`ALREADY_EXISTS`).
 
 ### get_agent_evolution_status
 

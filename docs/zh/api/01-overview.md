@@ -505,7 +505,7 @@ JSON 输出 - 错误：
 | DELETE | `/api/v1/admin/accounts/{account_id}` | 删除账号 |
 | POST | `/api/v1/admin/accounts/{account_id}/users` | 注册用户 |
 | GET | `/api/v1/admin/accounts/{account_id}/users` | 列出用户 |
-| GET | `/api/v1/admin/accounts/{account_id}/users/{user_id}/exist` | 判断用户是否为有效成员（仅返回布尔值） |
+| GET | `/api/v1/admin/accounts/{account_id}/users/{user_id}` | 获取单个用户的无凭据成员信息（user_id、role） |
 | GET | `/api/v1/admin/accounts/{account_id}/users/{user_id}/settings` | 获取用户记忆策略 |
 | PATCH | `/api/v1/admin/accounts/{account_id}/users/{user_id}/settings` | 更新用户记忆策略 |
 | DELETE | `/api/v1/admin/accounts/{account_id}/users/{user_id}` | 移除用户 |

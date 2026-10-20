@@ -2003,16 +2003,17 @@ class AsyncHTTPClient:
         )
         return self._handle_response(response)
 
-    async def admin_user_exists(self, account_id: str, user_id: str) -> bool:
-        """Return whether the user is an active member of the account.
+    async def admin_get_user(self, account_id: str, user_id: str) -> Dict[str, Any]:
+        """Return one user's credential-free membership info (user_id, role).
 
-        Accounts or users mid-deletion are not counted as active members.
+        Raises NotFoundError when the user does not exist. Never returns
+        api_key or key_prefix.
         """
         response = await self._request(
             "GET",
-            f"/api/v1/admin/accounts/{account_id}/users/{user_id}/exist",
+            f"/api/v1/admin/accounts/{account_id}/users/{user_id}",
         )
-        return bool(self._handle_response(response)["exist"])
+        return self._handle_response(response)
 
     async def admin_remove_user(self, account_id: str, user_id: str) -> Dict[str, Any]:
         response = await self._request(
@@ -3115,8 +3116,8 @@ class SyncHTTPClient:
     def admin_remove_user(self, account_id: str, user_id: str) -> Dict[str, Any]:
         return run_async(self._async_client.admin_remove_user(account_id, user_id))
 
-    def admin_user_exists(self, account_id: str, user_id: str) -> bool:
-        return run_async(self._async_client.admin_user_exists(account_id, user_id))
+    def admin_get_user(self, account_id: str, user_id: str) -> Dict[str, Any]:
+        return run_async(self._async_client.admin_get_user(account_id, user_id))
 
     def admin_set_role(self, account_id: str, user_id: str, role: str) -> Dict[str, Any]:
         return run_async(self._async_client.admin_set_role(account_id, user_id, role))
