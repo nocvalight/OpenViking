@@ -969,15 +969,9 @@ class FileStore(AccountStore):
             if query and query not in account_id.casefold():
                 continue
 
-            result.append(
-                {
-                    "account_id": account_id,
-                    "created_at": info.created_at,
-                    "user_count": len(info.users),
-                    "status": "deleting" if info.deletion else "active",
-                    **({"task_id": info.deletion["task_id"]} if info.deletion else {}),
-                }
-            )
+            # Reuse the single-account summary builder so the listed shape and
+            # the point-read stay one maintenance point.
+            result.append(self._account_summary(account_id, info))
         return _paginate(result, limit, page)
 
     def _get_users(
@@ -1480,6 +1474,24 @@ class FileStore(AccountStore):
             if user
             else None
         )
+
+    async def get_user_membership(
+        self, account_id: str, user_id: str
+    ) -> UserSummary | None:
+        """Refresh-first point read, symmetric with ``get_account``.
+
+        The hot-path ``get_user`` reads in-memory state directly; this admin
+        probe first honors the persisted registry when the watcher is off, so a
+        user created or re-roled by a peer process is visible cross-instance
+        instead of returning a stale 404 or role. A per-account refresh raises
+        ``NotFoundError`` when the account has no persisted state at all; that is
+        normalized to ``None`` so the contract stays "absent -> None".
+        """
+        try:
+            await self._refresh_users_for_management_read(account_id)
+        except NotFoundError:
+            return None
+        return await self.get_user(account_id, user_id)
 
     @deprecated(
         "get_user_for_management is a FileStore compatibility path and will be removed.",

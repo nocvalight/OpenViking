@@ -3834,3 +3834,47 @@ async def test_user_point_read_admin_scoped_to_own_account(lightweight_admin_cli
         headers=admin_headers,
     )
     assert denied.status_code == 403
+
+
+async def test_user_point_read_sees_peer_process_writes_without_a_list(
+    admin_client: httpx.AsyncClient,
+    admin_app: FastAPI,
+    admin_service: OpenVikingService,
+):
+    """Point read must not depend on a preceding list to refresh the registry.
+
+    With the account-store watcher off (the default), a user created or re-roled
+    by a peer process landed in the shared store but not in this instance's
+    memory. The membership probe refreshes on demand, so it must not return a
+    stale 404 or a stale role.
+    """
+    writer = build_api_key_manager(
+        root_key=ROOT_KEY,
+        viking_fs=admin_service.viking_fs,
+    )
+    await writer.load()
+    try:
+        acct = _uid()
+        await writer.create_account(acct, "alice")
+        await writer.register_user(acct, "bob", role="user")
+
+        # The serving instance never listed this account, so bob is only in the
+        # peer's store. The probe must still resolve him.
+        created = await admin_client.get(
+            f"/api/v1/admin/accounts/{acct}/users/bob",
+            headers=root_headers(),
+        )
+        assert created.status_code == 200, created.text
+        assert created.json()["result"] == {"user_id": "bob", "role": "user"}
+
+        # A peer-side role change must be reflected too, not served from stale
+        # memory.
+        await writer.set_role(acct, "bob", "admin")
+        rerole = await admin_client.get(
+            f"/api/v1/admin/accounts/{acct}/users/bob",
+            headers=root_headers(),
+        )
+        assert rerole.status_code == 200, rerole.text
+        assert rerole.json()["result"] == {"user_id": "bob", "role": "admin"}
+    finally:
+        await writer.close()

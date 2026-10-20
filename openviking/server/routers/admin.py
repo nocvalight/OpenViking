@@ -1064,7 +1064,7 @@ async def get_user(
     ``api_key`` or ``key_prefix``.
     """
     _check_account_access(ctx, account_id)
-    user = await _get_api_key_manager(request).get_user(account_id, user_id)
+    user = await _get_api_key_manager(request).get_user_membership(account_id, user_id)
     if user is None:
         raise NotFoundError(user_id, "user")
     return Response(status="ok", result={"user_id": user_id, "role": user["role"]})
