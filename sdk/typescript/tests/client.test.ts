@@ -1477,4 +1477,55 @@ describe("OpenVikingClient", () => {
       content: "*.log\n",
     });
   });
+
+  it("fetches one account by exact path without leaking credentials", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      ok({
+        account_id: "team-a",
+        created_at: "2026-10-20T03:00:00Z",
+        user_count: 2,
+        status: "active",
+      }),
+    );
+    const client = new OpenVikingClient({
+      baseUrl: "https://example.com",
+      apiKey: "root-key",
+      fetch: fetcher,
+    });
+
+    const account = await client.adminGetAccount("team-a");
+    expect(account).toMatchObject({ account_id: "team-a", status: "active" });
+    expect(account).not.toHaveProperty("api_key");
+
+    const url = new URL(String(fetcher.mock.calls[0]![0]));
+    expect(url.pathname).toBe("/api/v1/admin/accounts/team-a");
+    expect(
+      new Headers(fetcher.mock.calls[0]![1]?.headers).get("X-API-Key"),
+    ).toBe("root-key");
+  });
+
+  it("reports user active membership from the exist endpoint", async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(ok({ exist: true }))
+      .mockResolvedValueOnce(ok({ exist: false }));
+    const client = new OpenVikingClient({
+      baseUrl: "https://example.com",
+      apiKey: "root-key",
+      fetch: fetcher,
+    });
+
+    await expect(client.adminUserExists("team-a", "alice")).resolves.toBe(true);
+    await expect(client.adminUserExists("team-a", "ghost")).resolves.toBe(
+      false,
+    );
+
+    const urls = fetcher.mock.calls.map(
+      (call) => new URL(String(call[0])).pathname,
+    );
+    expect(urls).toEqual([
+      "/api/v1/admin/accounts/team-a/users/alice/exist",
+      "/api/v1/admin/accounts/team-a/users/ghost/exist",
+    ]);
+  });
 });

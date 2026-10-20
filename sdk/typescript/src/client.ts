@@ -1249,6 +1249,10 @@ export class OpenVikingClient {
       `/api/v1/admin/accounts/${pathPart(accountId)}`,
     );
   }
+  /** Return credential-free metadata for one account; rejects with NOT_FOUND if absent. */
+  adminGetAccount(accountId: string): Promise<JsonObject> {
+    return this.request("GET", `/api/v1/admin/accounts/${pathPart(accountId)}`);
+  }
   /** Register a user in an account. */
   adminRegisterUser(
     accountId: string,
@@ -1298,6 +1302,14 @@ export class OpenVikingClient {
       "DELETE",
       `/api/v1/admin/accounts/${pathPart(accountId)}/users/${pathPart(userId)}`,
     );
+  }
+  /** Whether a user is an active member; accounts/users mid-deletion return false. */
+  async adminUserExists(accountId: string, userId: string): Promise<boolean> {
+    const result = await this.request<{ exist: boolean }>(
+      "GET",
+      `/api/v1/admin/accounts/${pathPart(accountId)}/users/${pathPart(userId)}/exist`,
+    );
+    return result.exist === true;
   }
   /** Change a user's role. */
   adminSetRole(

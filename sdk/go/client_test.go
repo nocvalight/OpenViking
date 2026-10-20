@@ -647,6 +647,78 @@ func TestAdminEmptySeedPayloadsAreSent(t *testing.T) {
 	}
 }
 
+func TestAdminGetAccount(t *testing.T) {
+	client, closeServer := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("method = %s", r.Method)
+		}
+		if r.URL.Path != "/api/v1/admin/accounts/acct" {
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+		writeOK(t, w, map[string]any{
+			"account_id": "acct",
+			"created_at": "2026-10-20T03:00:00Z",
+			"user_count": 2,
+			"status":     "active",
+		})
+	}))
+	defer closeServer()
+
+	account, err := client.AdminGetAccount(context.Background(), "acct")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if account["status"] != "active" || account["user_count"] != float64(2) {
+		t.Fatalf("account = %#v", account)
+	}
+	if _, ok := account["api_key"]; ok {
+		t.Fatal("account metadata must not include credentials")
+	}
+}
+
+func TestAdminGetAccountNotFound(t *testing.T) {
+	client, closeServer := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeAPIError(t, w, http.StatusNotFound, "NOT_FOUND", nil)
+	}))
+	defer closeServer()
+
+	if _, err := client.AdminGetAccount(context.Background(), "missing"); !IsCode(err, "NOT_FOUND") {
+		t.Fatalf("err = %v, want NOT_FOUND", err)
+	}
+}
+
+func TestAdminUserExists(t *testing.T) {
+	var requestedPath string
+	client, closeServer := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("method = %s", r.Method)
+		}
+		requestedPath = r.URL.Path
+		exist := strings.HasSuffix(r.URL.Path, "/alice/exist")
+		writeOK(t, w, map[string]any{"exist": exist})
+	}))
+	defer closeServer()
+
+	got, err := client.AdminUserExists(context.Background(), "acct", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got {
+		t.Fatal("expected alice to exist")
+	}
+	if requestedPath != "/api/v1/admin/accounts/acct/users/alice/exist" {
+		t.Fatalf("path = %s", requestedPath)
+	}
+
+	missing, err := client.AdminUserExists(context.Background(), "acct", "ghost")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if missing {
+		t.Fatal("expected ghost not to exist")
+	}
+}
+
 func TestSearchSendsSessionAndSearchFilters(t *testing.T) {
 	client, closeServer := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/search/search" {
