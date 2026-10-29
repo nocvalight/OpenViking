@@ -8,7 +8,7 @@ cargo bench --locked -p ragfs --bench pathlock_perf -- \
   --output /tmp/pathlock-perf.csv
 ```
 
-Use `--mode tree` or `--mode concurrency` to run either benchmark independently.
+Use `--mode tree`, `--mode concurrency`, or `--mode batch` independently.
 These are manual measurements, with no timing thresholds in CI. No server, model,
 Redis service, or additional dependencies are required. All business data, databases,
 and subprocess coordination files live in temporary directories and are cleaned up.
@@ -48,3 +48,26 @@ file deletion/copy time. Twenty Tree samples give only a coarse tail estimate.
 Repeat runs on otherwise idle hardware, record OS/CPU/Rust version, and use more
 samples for stable P95/P99 comparisons. Thread and process results are different
 workloads and should not be interpreted as a pure connection-pool speedup.
+
+The batch benchmark measures 1/5/13 Exact paths of equal depth, with shared or
+distinct immediate parents. Directories already exist; three warmup cycles are
+excluded. Acquire and release have separate latency rows and filesystem call
+totals (`read`, `stat`, `write`, `compare_write`, `compare_remove`, `mkdir`).
+Divide totals by `successes` for calls per batch. These are trait-level calls,
+not S3 HTTP requests: conditional operations can issue multiple HTTP requests.
+Batch throughput uses each phase's cumulative duration, not whole-cycle wall
+time. Any batch acquire/release failure aborts the run instead of yielding a
+partial comparison. Use at least 200 samples, repeat sequential runs on the
+same host, and compare the same harness on unmodified and modified sources.
+LocalFS does not predict TOS end-to-end latency.
+
+Native metrics export `lock_phase_duration_seconds` with bounded `phase`,
+`outcome`, and `batch_size` labels. Histogram count is phase invocation count;
+sum measures total native phase time. `acquire_total` includes retries, owner
+waits, I/O and registry work; `release_total` includes owner serialization and
+owned-token removal. Totals overlap their constituent phases; do not sum all
+series. Outcomes include failed and cancelled work. No paths or capabilities
+are labels. Per-phase recording itself adds CPU overhead, measurable in the
+one-path LocalFS case. Python cProfile still measures the surrounding workflow;
+use these histograms to split the native wait and existing filesystem operation
+metrics to correlate backend I/O.

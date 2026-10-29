@@ -16,7 +16,7 @@ use uuid::Uuid;
 use crate::core::internal_names::{EXACT_LOCK_FILE_PREFIX, PATH_LOCK_FILE};
 use crate::core::{FileSystem, FsContextView};
 
-use super::metrics::LockMetrics;
+use super::metrics::{LockMetrics, LockProfile};
 use super::path::normalize_logical_path;
 use super::provider::{AcquisitionChange, AtomicAcquisition, PathLockHandleMode, PathLockProvider};
 use super::resolver::{LockPathResolver, ResolvedExactPaths};
@@ -1011,6 +1011,8 @@ impl PathLockManager {
         let sorted = Self::normalize_requests(requests)?;
 
         let owner = self.resolve_owner_state(owner_capability)?;
+        let profile = LockProfile::new(self.metrics.read().await.phases.clone(), sorted.len());
+        let mut total_timer = profile.timer("acquire_total");
         let owner_id = owner.owner_id.clone();
         debug!(owner_id = %owner_id, requests = ?requests, normalized_requests = ?sorted, timeout_ms = timeout.as_millis() as u64, "pathlock acquire batch start");
 
@@ -1020,30 +1022,36 @@ impl PathLockManager {
         let mut first_attempt = true;
 
         let result = loop {
-            let (mut owner_registry, locked_immediately) = match owner.registry.try_lock() {
-                Ok(owner_registry) => (owner_registry, true),
-                Err(_) => {
-                    if waiting.0.is_none() {
-                        debug!(owner_id = %owner_id, requests = ?sorted, timeout_ms = timeout.as_millis() as u64, "pathlock acquire batch waiting for owner state");
-                        waiting.0 = Some(&self.waiting_lock_count);
-                        self.waiting_lock_count
-                            .fetch_add(1, AtomicOrdering::Relaxed);
-                    }
-                    let remaining = timeout.saturating_sub(start.elapsed());
-                    if remaining.is_zero() {
-                        break Err(PathLockError::Timeout {
-                            elapsed_ms: start.elapsed().as_millis() as u64,
-                        });
-                    }
-                    match tokio::time::timeout(remaining, owner.registry.lock()).await {
-                        Ok(owner_registry) => (owner_registry, false),
+            let owner_result = profile
+                .measure("owner_wait", async {
+                    match owner.registry.try_lock() {
+                        Ok(owner_registry) => Ok((owner_registry, true)),
                         Err(_) => {
-                            break Err(PathLockError::Timeout {
-                                elapsed_ms: start.elapsed().as_millis() as u64,
-                            });
+                            if waiting.0.is_none() {
+                                debug!(owner_id = %owner_id, requests = ?sorted, timeout_ms = timeout.as_millis() as u64, "pathlock acquire batch waiting for owner state");
+                                waiting.0 = Some(&self.waiting_lock_count);
+                                self.waiting_lock_count
+                                    .fetch_add(1, AtomicOrdering::Relaxed);
+                            }
+                            let remaining = timeout.saturating_sub(start.elapsed());
+                            if remaining.is_zero() {
+                                return Err(PathLockError::Timeout {
+                                    elapsed_ms: start.elapsed().as_millis() as u64,
+                                });
+                            }
+                            match tokio::time::timeout(remaining, owner.registry.lock()).await {
+                                Ok(owner_registry) => Ok((owner_registry, false)),
+                                Err(_) => Err(PathLockError::Timeout {
+                                    elapsed_ms: start.elapsed().as_millis() as u64,
+                                }),
+                            }
                         }
                     }
-                }
+                })
+                .await;
+            let (mut owner_registry, locked_immediately) = match owner_result {
+                Ok(result) => result,
+                Err(error) => break Err(error),
             };
 
             if (!first_attempt || !locked_immediately) && start.elapsed() >= timeout {
@@ -1062,7 +1070,10 @@ impl PathLockManager {
             }
             first_attempt = false;
             let confirmed_at = Instant::now();
-            let acquired_lock_paths = match self.try_acquire_batch_once(&sorted, &owner_id).await {
+            let acquired_lock_paths = match self
+                .try_acquire_batch_once(&sorted, &owner_id, &profile)
+                .await
+            {
                 Ok(acquired) => acquired,
                 Err(err) => {
                     drop(owner_registry);
@@ -1099,7 +1110,9 @@ impl PathLockManager {
                     }
 
                     let remaining = timeout.saturating_sub(start.elapsed());
+                    let mut retry_timer = profile.timer("retry_wait");
                     tokio::time::sleep(Self::retry_delay(retry_attempt, remaining)).await;
+                    retry_timer.finish(&Ok(()));
                     retry_attempt = retry_attempt.saturating_add(1);
                     continue;
                 }
@@ -1119,8 +1132,11 @@ impl PathLockManager {
                 let error = PathLockError::InvalidRequest(
                     "pathlock lease expired during acquisition".to_string(),
                 );
-                let rollback = self
-                    .rollback_acquisitions(&acquired_lock_paths, &owner_id)
+                let rollback = profile
+                    .measure(
+                        "rollback",
+                        self.rollback_acquisitions(&acquired_lock_paths, &owner_id),
+                    )
                     .await;
                 break match rollback {
                     Ok(()) => Err(error),
@@ -1145,8 +1161,11 @@ impl PathLockManager {
                 &lock_kinds,
                 confirmed_at,
             ) {
-                let rollback = self
-                    .rollback_acquisitions(&acquired_lock_paths, &owner_id)
+                let rollback = profile
+                    .measure(
+                        "rollback",
+                        self.rollback_acquisitions(&acquired_lock_paths, &owner_id),
+                    )
                     .await;
                 break match rollback {
                     Ok(()) => Err(error),
@@ -1158,8 +1177,11 @@ impl PathLockManager {
                 .publish(lease.lease_ref.clone(), owner.clone())
             {
                 owner_registry.rollback_insert(&lease.lease_ref);
-                let rollback = self
-                    .rollback_acquisitions(&acquired_lock_paths, &owner_id)
+                let rollback = profile
+                    .measure(
+                        "rollback",
+                        self.rollback_acquisitions(&acquired_lock_paths, &owner_id),
+                    )
                     .await;
                 break match rollback {
                     Ok(()) => Err(error),
@@ -1173,6 +1195,7 @@ impl PathLockManager {
             });
         };
 
+        total_timer.finish(&result);
         match result {
             Ok(owned) => {
                 let elapsed_ns = u64::try_from(start.elapsed().as_nanos()).unwrap_or(u64::MAX);
@@ -1195,15 +1218,18 @@ impl PathLockManager {
         &self,
         requests: &[PathLockRequest],
         owner_id: &str,
+        profile: &LockProfile,
     ) -> PathLockResult<Vec<AtomicAcquisition>> {
         let now_ns = Self::now_ns();
-        match self
-            .provider
-            .try_acquire_batch_atomic_with_stats(
-                requests,
-                owner_id,
-                now_ns,
-                now_ns.saturating_sub(self.lock_expire_ns()),
+        match profile
+            .measure(
+                "provider_atomic",
+                self.provider.try_acquire_batch_atomic_with_stats(
+                    requests,
+                    owner_id,
+                    now_ns,
+                    now_ns.saturating_sub(self.lock_expire_ns()),
+                ),
             )
             .await
         {
@@ -1219,22 +1245,42 @@ impl PathLockManager {
 
         let mut acquired = Vec::new();
         let mut exact_resolutions: HashMap<String, ResolvedExactPaths> = HashMap::new();
+        let mut confirmed_dirs = HashSet::new();
         let acquisition: PathLockResult<()> = async {
             for request in requests {
                 match request.kind {
                     PathLockKind::Exact => {
-                        self.check_ancestor_tree_locks(&request.path, owner_id)
+                        profile
+                            .measure(
+                                "ancestor_precheck",
+                                self.check_ancestor_tree_locks(&request.path, owner_id),
+                            )
                             .await?;
-                        let resolved = self.resolver.resolve_exact_paths(&request.path).await?;
-                        self.check_lock_paths(&resolved.conflict_paths, owner_id)
+                        let resolved = profile
+                            .measure("resolve", self.resolver.resolve_exact_paths(&request.path))
+                            .await?;
+                        profile
+                            .measure(
+                                "conflict_precheck",
+                                self.check_lock_paths(&resolved.conflict_paths, owner_id),
+                            )
                             .await?;
                         let lock_path = resolved.acquire_lock_path.clone();
                         exact_resolutions.insert(request.path.clone(), resolved);
-                        self.ensure_lock_dir(&lock_path).await.map_err(|error| {
-                            PathLockError::Io(format!("failed to create lock dir: {error}"))
-                        })?;
-                        let change = self
-                            .try_acquire_one(&lock_path, owner_id, PathLockKind::Exact)
+                        profile
+                            .measure(
+                                "ensure_dir",
+                                self.ensure_lock_dir_once(&lock_path, &mut confirmed_dirs),
+                            )
+                            .await
+                            .map_err(|error| {
+                                PathLockError::Io(format!("failed to create lock dir: {error}"))
+                            })?;
+                        let change = profile
+                            .measure(
+                                "token_acquire",
+                                self.try_acquire_one(&lock_path, owner_id, PathLockKind::Exact),
+                            )
                             .await?;
                         acquired.push(AtomicAcquisition {
                             handle: lock_path,
@@ -1242,18 +1288,42 @@ impl PathLockManager {
                         });
                     }
                     PathLockKind::Tree => {
-                        let resolved = self.resolver.resolve_tree_paths(&request.path).await?;
-                        self.check_ancestor_tree_locks(&request.path, owner_id)
+                        let resolved = profile
+                            .measure("resolve", self.resolver.resolve_tree_paths(&request.path))
                             .await?;
-                        self.check_lock_paths(&resolved.conflict_paths, owner_id)
+                        profile
+                            .measure(
+                                "ancestor_precheck",
+                                self.check_ancestor_tree_locks(&request.path, owner_id),
+                            )
                             .await?;
-                        self.check_descendant_locks(&request.path, owner_id).await?;
+                        profile
+                            .measure(
+                                "conflict_precheck",
+                                self.check_lock_paths(&resolved.conflict_paths, owner_id),
+                            )
+                            .await?;
+                        profile
+                            .measure(
+                                "descendant_precheck",
+                                self.check_descendant_locks(&request.path, owner_id),
+                            )
+                            .await?;
                         let lock_path = resolved.acquire_lock_path;
-                        self.ensure_lock_dir(&lock_path).await.map_err(|error| {
-                            PathLockError::Io(format!("failed to create lock dir: {error}"))
-                        })?;
-                        let change = self
-                            .try_acquire_one(&lock_path, owner_id, PathLockKind::Tree)
+                        profile
+                            .measure(
+                                "ensure_dir",
+                                self.ensure_lock_dir_once(&lock_path, &mut confirmed_dirs),
+                            )
+                            .await
+                            .map_err(|error| {
+                                PathLockError::Io(format!("failed to create lock dir: {error}"))
+                            })?;
+                        let change = profile
+                            .measure(
+                                "token_acquire",
+                                self.try_acquire_one(&lock_path, owner_id, PathLockKind::Tree),
+                            )
                             .await?;
                         acquired.push(AtomicAcquisition {
                             handle: lock_path,
@@ -1266,17 +1336,32 @@ impl PathLockManager {
         }
         .await;
         if let Err(error) = acquisition {
-            if let Err(rollback_error) = self.rollback_acquisitions(&acquired, owner_id).await {
+            if let Err(rollback_error) = profile
+                .measure("rollback", self.rollback_acquisitions(&acquired, owner_id))
+                .await
+            {
                 return Err(Self::rollback_error(error, rollback_error));
             }
             return Err(error);
         }
 
+        // All our tokens are now visible. This cache starts fresh and is used
+        // only by this read-only verification round, never across publication
+        // or retries. A competing Tree acquisition must also scan our tokens.
+        let mut checked_ancestors = HashSet::new();
         let verification: PathLockResult<()> = async {
             for request in requests {
                 match request.kind {
                     PathLockKind::Exact => {
-                        self.check_ancestor_tree_locks(&request.path, owner_id)
+                        profile
+                            .measure(
+                                "ancestor_postcheck",
+                                self.check_ancestor_tree_locks_once(
+                                    &request.path,
+                                    owner_id,
+                                    &mut checked_ancestors,
+                                ),
+                            )
                             .await?;
                         let resolved = exact_resolutions.get(&request.path).ok_or_else(|| {
                             PathLockError::Io(format!(
@@ -1284,18 +1369,42 @@ impl PathLockManager {
                                 request.path
                             ))
                         })?;
-                        self.check_lock_paths(&resolved.conflict_paths, owner_id)
+                        profile
+                            .measure(
+                                "conflict_postcheck",
+                                self.check_lock_paths(&resolved.conflict_paths, owner_id),
+                            )
                             .await?;
                     }
                     PathLockKind::Tree => {
-                        self.check_ancestor_tree_locks(&request.path, owner_id)
+                        profile
+                            .measure(
+                                "ancestor_postcheck",
+                                self.check_ancestor_tree_locks_once(
+                                    &request.path,
+                                    owner_id,
+                                    &mut checked_ancestors,
+                                ),
+                            )
                             .await?;
-                        let tree_candidates = self
-                            .resolver
-                            .resolve_tree_conflict_paths(&request.path)
+                        let tree_candidates = profile
+                            .measure(
+                                "resolve_postcheck",
+                                self.resolver.resolve_tree_conflict_paths(&request.path),
+                            )
                             .await?;
-                        self.check_lock_paths(&tree_candidates, owner_id).await?;
-                        self.check_descendant_locks(&request.path, owner_id).await?;
+                        profile
+                            .measure(
+                                "conflict_postcheck",
+                                self.check_lock_paths(&tree_candidates, owner_id),
+                            )
+                            .await?;
+                        profile
+                            .measure(
+                                "descendant_postcheck",
+                                self.check_descendant_locks(&request.path, owner_id),
+                            )
+                            .await?;
                     }
                 }
             }
@@ -1303,7 +1412,10 @@ impl PathLockManager {
         }
         .await;
         if let Err(error) = verification {
-            if let Err(rollback_error) = self.rollback_acquisitions(&acquired, owner_id).await {
+            if let Err(rollback_error) = profile
+                .measure("rollback", self.rollback_acquisitions(&acquired, owner_id))
+                .await
+            {
                 return Err(Self::rollback_error(error, rollback_error));
             }
             return Err(error);
@@ -1443,9 +1555,22 @@ impl PathLockManager {
 
     /// Check ancestor directories for tree locks that would conflict.
     async fn check_ancestor_tree_locks(&self, path: &str, owner_id: &str) -> PathLockResult<()> {
+        self.check_ancestor_tree_locks_once(path, owner_id, &mut HashSet::new())
+            .await
+    }
+
+    async fn check_ancestor_tree_locks_once(
+        &self,
+        path: &str,
+        owner_id: &str,
+        checked: &mut HashSet<String>,
+    ) -> PathLockResult<()> {
         let now_ns = Self::now_ns();
 
         for parent in LockPathResolver::ancestor_paths(path) {
+            if checked.contains(&parent) {
+                continue;
+            }
             for ancestor_lock in self.resolver.resolve_tree_conflict_paths(&parent).await? {
                 if let Some(token) = self.provider.read_token(&ancestor_lock).await? {
                     // Only Tree locks propagate to descendants; an Exact lock on
@@ -1462,6 +1587,7 @@ impl PathLockManager {
                     }
                 }
             }
+            checked.insert(parent);
         }
         Ok(())
     }
@@ -1492,10 +1618,14 @@ impl PathLockManager {
     }
 
     /// Ensure the parent directory of a lock path exists.
-    async fn ensure_lock_dir(&self, lock_path: &str) -> PathLockResult<()> {
+    async fn ensure_lock_dir_once(
+        &self,
+        lock_path: &str,
+        confirmed: &mut HashSet<String>,
+    ) -> PathLockResult<()> {
         if let Some(parent_end) = lock_path.rfind('/') {
             let parent = &lock_path[..parent_end];
-            if parent.is_empty() || parent == "/" {
+            if parent.is_empty() || parent == "/" || confirmed.contains(parent) {
                 return Ok(());
             }
             // Walk up creating missing ancestors.
@@ -1530,6 +1660,9 @@ impl PathLockManager {
             if !created_dirs.is_empty() {
                 debug!(lock_path = %lock_path, created_dirs = ?created_dirs, "ensured pathlock parent directories");
             }
+            // Only directory setup is reused. Each path still performs token
+            // reads and conditional writes; acquisition errors roll back the batch.
+            confirmed.insert(parent.to_string());
         }
         Ok(())
     }
@@ -1571,6 +1704,16 @@ impl PathLockManager {
 
     /// Release an owned lease.
     pub async fn release(&self, lease: &OwnedPathLockLease) -> PathLockResult<()> {
+        let profile = LockProfile::new(
+            self.metrics.read().await.phases.clone(),
+            lease.lease.lock_paths.len(),
+        );
+        profile
+            .measure("release_total", self.release_owned(lease))
+            .await
+    }
+
+    async fn release_owned(&self, lease: &OwnedPathLockLease) -> PathLockResult<()> {
         let owner = self
             .lease_registry
             .resolve(&lease.lease.lease_ref)
@@ -2388,6 +2531,10 @@ impl PathLockManager {
 #[cfg(test)]
 #[path = "lost_lease_tests.rs"]
 mod lost_lease_tests;
+
+#[cfg(test)]
+#[path = "profile_tests.rs"]
+mod profile_tests;
 
 #[cfg(test)]
 mod tests {
